@@ -7,6 +7,7 @@ import math
 import os
 import numpy as np
 
+
 # --
 # which *py to use??
 _WHICH_XP = os.environ.get("WHICH_XP", "np")
@@ -47,12 +48,17 @@ class Tensor:
 
     # accumulate grad
     def accumulate_grad(self, g: xp.ndarray) -> None:
-        raise NotImplementedError
+        if self.grad is None:
+            self.grad = g
+        else:
+            self.grad += g
 
     # accumulate grad sparsely; note: only for D2 lookup matrix!
     def accumulate_grad_sparse(self, gs: List[Tuple[int, xp.ndarray]]) -> None:
-        raise NotImplementedError
-
+        if self.grad is None: self.grad = {}
+        for idx, grad in gs:
+            self.grad[idx] = self.grad.get(idx, xp.zeros_like(grad)) + grad
+                
     # get dense grad
     def get_dense_grad(self):
         ret = xp.zeros_like(self.data)
@@ -163,7 +169,8 @@ class Initializer:
 
     @staticmethod
     def xavier_uniform(shape: Sequence[int], gain=1.0):
-        raise NotImplementedError
+        a = gain*math.sqrt(6/(shape[0] + shape[1]+1))
+        return xp.random.uniform(-a, a, size = shape)
 
 # Model: collection of parameters
 class Model:
@@ -230,7 +237,50 @@ class SGDTrainer(Trainer):
 
 class MomentumTrainer(Trainer):
     def __init__(self, model: Model, lrate=0.1, mrate=0.99):
-        raise NotImplementedError
+        super().__init__(model)
+        self.lrate = lrate
+        self.mrate = mrate
+        self.grad_avg = {}
+
+    def update(self):
+        lr = self.lrate
+        mom = self.mrate
+        for p in self.model.params:
+            if p.grad is not None:
+                if isinstance(p.grad, dict):
+                    self.update_sparse(p, p.grad, lr, mom)
+                else:
+                    self.update_dense(p, p.grad, lr, mom)
+            p.grad = None
+
+    def update_dense(self, p: Parameter, g: xp.ndarray, lr: float, mom: float):
+        if p not in self.grad_avg:
+            self.grad_avg[p] = (1-mom)*g
+        else:
+            self.grad_avg[p] = mom*self.grad_avg[p] + (1-mom)*g
+
+        p.data -= lr*self.grad_avg[p]
+
+    def update_sparse(self, p: Parameter, gs: Dict[int, xp.ndarray], lr: float, mom: float):
+        if p not in self.grad_avg:
+            self.grad_avg[p] = xp.zeros(p.data.shape)
+            for idx, grad in gs.items():
+                self.grad_avg[p][idx] = (1-mom)*grad
+        else:
+            for i in range(p.shape[0]):
+                if i in gs.keys():
+                    self.grad_avg[p][i] = mom*self.grad_avg[p][i] + (1-mom)*gs[i]
+                else:
+                    self.grad_avg[p][i] = mom*self.grad_avg[p][i]
+        # for idx,_ in gs.items():
+        #     p.data[idx] -= lr*self.grad_avg[p][idx]
+
+        p.data -= lr*self.grad_avg[p]
+
+    
+
+
+
 
 # --
 
@@ -266,7 +316,19 @@ def log_softmax(x: xp.ndarray, axis=-1):
 
 class OpLookup(Op):
     def __init__(self):
-        raise NotImplementedError
+        super().__init__()
+
+    def forward(self, emb_matrix: Tensor, words: List[int]):
+        embs = Tensor(xp.asarray([emb_matrix.data[i] for i in words]))
+        self.store_ctx(emb_matrix = emb_matrix, embeddings = embs, words = words)
+        return embs
+
+    def backward(self):
+        emb_matrix,embs,words = self.get_ctx('emb_matrix', 'embeddings', 'words')
+        if embs.grad is not None:
+            gs = [[word, grad] for word,grad in zip(words, embs.grad)]
+            emb_matrix.accumulate_grad_sparse(gs)
+
 
 class OpSum(Op):
     def __init__(self):
@@ -290,11 +352,43 @@ class OpSum(Op):
 
 class OpDot(Op):
     def __init__(self):
-        raise NotImplementedError
+        super().__init__()
+
+    def forward(self, weight: Tensor, vector: Tensor):
+        out = Tensor(xp.dot(weight.data, vector.data))
+        self.store_ctx(weight = weight, vector = vector, out = out)
+        return out
+        
+    def backward(self):
+        weight, vector, out = self.get_ctx('weight', 'vector', 'out')
+        in_shape, out_shape = weight.shape[1], weight.shape[0]
+        if out.grad is not None:
+            og = out.grad.reshape(out_shape, 1)
+            v = vector.data.reshape(1, in_shape)
+            weight_grad = xp.dot(og, v)
+            vector_grad = xp.dot(weight.data.transpose(), out.grad)
+            weight.accumulate_grad(weight_grad)
+            vector.accumulate_grad(vector_grad)
+
 
 class OpTanh(Op):
     def __init__(self):
-        raise NotImplementedError
+        super().__init__()
+
+    def forward(self, vector: Tensor):
+        out = Tensor(xp.tanh(vector.data))
+        self.store_ctx(vector = vector, out = out)
+        return out
+
+    def backward(self):
+        vector, out = self.get_ctx('vector', 'out')
+        if out.grad is not None:
+            vector_grad = xp.multiply(xp.cosh(vector.data)**(-2), out.grad)
+            vector.accumulate_grad(vector_grad)
+
+
+
+
 
 class OpRelu(Op):
     def __init__(self):

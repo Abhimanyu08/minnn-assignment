@@ -28,6 +28,7 @@ def load_module(f: str, m: str):
     return ret
 
 def is_allclose(x, y):
+    # print(f'x = {x} \n y = {y}')
     return np.allclose(x, y, rtol=1.e-3, atol=1.e-5)
     # return np.abs(x-y).sum().item() <= 1e-5
 
