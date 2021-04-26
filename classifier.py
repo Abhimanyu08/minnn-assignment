@@ -4,7 +4,7 @@ import random
 import minnn as mn
 import numpy as np
 import argparse
-
+import fasttext
 # --
 random.seed(12345)
 np.random.seed(12345)
@@ -31,6 +31,7 @@ def get_args():
     parser.add_argument("--do_gradient_check", type=int, default=0)
     parser.add_argument("--dev_output", type=str, default="output.dev.txt")  # output for dev
     parser.add_argument("--test_output", type=str, default="output.test.txt")  # output for dev
+    parser.add_argument("--use_pretrained_embeddings", type = bool, default= False) #whether to use fasttext pretrained embeddings
     args = parser.parse_args()
     print(f"RUN: {vars(args)}")
     return args
@@ -71,16 +72,20 @@ def main():
     trainer = mn.MomentumTrainer(model, lrate=args.lrate, mrate=args.mrate)
 
     # Define the model
-    EMB_SIZE = args.emb_size
-    HID_SIZE = args.hid_size
+    USE_PRETRAINED_EMBEDDINGS = args.use_pretrained_embeddings
+    if USE_PRETRAINED_EMBEDDINGS:
+        ft = fasttext.load_model('data/cc.en.100.bin')
+
+    EMB_SIZE = ft.get_dimension() if USE_PRETRAINED_EMBEDDINGS else args.emb_size 
+    HID_SIZE = ft.get_dimension() if USE_PRETRAINED_EMBEDDINGS else args.hid_size
     HID_LAY = args.hid_layer
-    W_emb = model.add_parameters((nwords, EMB_SIZE))  # Word embeddings
+    if not USE_PRETRAINED_EMBEDDINGS: W_emb = model.add_parameters((nwords, EMB_SIZE))  # Word embeddings
     W_h = [model.add_parameters((HID_SIZE, EMB_SIZE if lay == 0 else HID_SIZE), initializer='xavier_uniform') for lay in range(HID_LAY)]
     b_h = [model.add_parameters((HID_SIZE)) for lay in range(HID_LAY)]
     W_sm = model.add_parameters((ntags, HID_SIZE), initializer='xavier_uniform')  # Softmax weights
     b_sm = model.add_parameters((ntags))  # Softmax bias
 
-    # A function to calculate scores for one value
+        # A function to calculate scores for one value
     def calc_scores(words, is_training):
         # word drop in training
         if is_training:
@@ -88,7 +93,11 @@ def main():
             if _word_drop > 0.:
                 words = [(UNK if s<_word_drop else w) for w,s in zip(words, np.random.random(len(words)))]
         # --
-        emb = mn.lookup(W_emb, words)  # [len, D]
+        if USE_PRETRAINED_EMBEDDINGS:
+            emb = np.array([ft.get_word_vector(i2w[word]) for word in words])
+            emb = mn.Tensor(emb, need_grad = False)
+        else:
+            emb = mn.lookup(W_emb, words)  # [len, D]
         emb = mn.dropout(emb, args.emb_drop, is_training)
         h = mn.sum(emb, axis=0)  # [D]
         for W_h_i, b_h_i in zip(W_h, b_h):
