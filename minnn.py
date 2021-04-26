@@ -34,10 +34,11 @@ def set_random_seed(seed: int):  # allow reset!
 
 # Tensor
 class Tensor:
-    def __init__(self, data: xp.ndarray):
+    def __init__(self, data: xp.ndarray, need_grad = True):
         self.data: xp.ndarray = data
         self.grad: Union[Dict[int, xp.ndarray], xp.ndarray] = None  # should be the same size as data
         self.op: Op = None  # generated from which operation?
+        self.need_grad = need_grad
 
     @property
     def shape(self):
@@ -48,6 +49,7 @@ class Tensor:
 
     # accumulate grad
     def accumulate_grad(self, g: xp.ndarray) -> None:
+        if not self.need_grad: return
         if self.grad is None:
             self.grad = g
         else:
@@ -55,6 +57,7 @@ class Tensor:
 
     # accumulate grad sparsely; note: only for D2 lookup matrix!
     def accumulate_grad_sparse(self, gs: List[Tuple[int, xp.ndarray]]) -> None:
+        if not self.need_grad: return
         if self.grad is None: self.grad = {}
         for idx, grad in gs:
             self.grad[idx] = self.grad.get(idx, xp.zeros_like(grad)) + grad
@@ -89,7 +92,7 @@ class Parameter(Tensor):
     @classmethod
     def from_tensor(cls, tensor: Tensor):
         return Parameter(tensor.data)  # currently simply steal its data
-
+        
 # shortcut for create tensor
 def astensor(t):
     return t if isinstance(t, Tensor) else Tensor(xp.asarray(t))
